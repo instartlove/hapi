@@ -79,6 +79,7 @@ export function registerCliHandlers(socket: SocketWithData, deps: CliHandlersDep
     }
 
     const auth = socket.handshake.auth as Record<string, unknown> | undefined
+    const clientType = typeof auth?.clientType === 'string' ? auth.clientType : null
     const sessionId = typeof auth?.sessionId === 'string' ? auth.sessionId : null
     if (sessionId && resolveSessionAccess(sessionId).ok) {
         socket.join(`session:${sessionId}`)
@@ -128,5 +129,8 @@ export function registerCliHandlers(socket: SocketWithData, deps: CliHandlersDep
     socket.on('disconnect', () => {
         rpcRegistry.unregisterAll(socket)
         cleanupTerminalHandlers(socket, { terminalRegistry, terminalNamespace })
+        if (clientType === 'session-scoped' && sessionId && resolveSessionAccess(sessionId).ok) {
+            onSessionEnd?.({ sid: sessionId, time: Date.now() })
+        }
     })
 }

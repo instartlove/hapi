@@ -11,6 +11,7 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { generateHookSettingsFile, cleanupHookSettingsFile } from '@/claude/utils/generateHookSettings';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
+import { registerSuspendSessionHandler } from './registerSuspendSessionHandler';
 import type { Session } from './session';
 import { bootstrapSession } from '@/agent/sessionFactory';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
@@ -29,7 +30,9 @@ export interface StartOptions {
 }
 
 export async function runClaude(options: StartOptions = {}): Promise<void> {
-    const workingDirectory = process.cwd();
+    // In dev mode, runner spawns with --cwd pointing to CLI project root
+    // but the actual working directory is passed via HAPI_WORKING_DIR
+    const workingDirectory = process.env.HAPI_WORKING_DIR || process.cwd();
     const startedBy = options.startedBy ?? 'terminal';
 
     // Log environment info at startup
@@ -122,6 +125,12 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
+    registerSuspendSessionHandler(session.rpcHandlerManager, async (payload) => {
+        lifecycle.setLifecycleState('suspended');
+        lifecycle.setLifecycleBy(payload.by ?? 'webapp');
+        lifecycle.setArchiveReason(payload.reason ?? 'Session suspended');
+        await lifecycle.cleanupAndExit();
+    });
 
     // Set initial agent state
     const startingMode = options.startingMode ?? (startedBy === 'runner' ? 'remote' : 'local');
@@ -311,11 +320,20 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     let loopError: unknown = null;
     let loopFailed = false;
     try {
+        const hasUserSessionControl = Boolean(
+            options.claudeArgs?.includes('--resume')
+            || options.claudeArgs?.includes('--continue')
+        );
+        const resumeSessionId = hasUserSessionControl
+            ? undefined
+            : (sessionInfo.metadata?.claudeSessionId ?? undefined);
+
         await loop({
             path: workingDirectory,
             model: options.model,
             permissionMode: options.permissionMode,
             startingMode,
+            resumeSessionId,
             messageQueue,
             api,
             allowedTools: happyServer.toolNames.map(toolName => `mcp__hapi__${toolName}`),

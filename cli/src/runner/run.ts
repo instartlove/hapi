@@ -19,7 +19,7 @@ import { cleanupRunnerState, getInstalledCliMtimeMs, isRunnerRunningCurrentlyIns
 import { startRunnerControlServer } from './controlServer';
 import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
 import { join } from 'path';
-import { buildMachineMetadata } from '@/agent/sessionFactory';
+import { buildMachineMetadata, loadHistoricalSessions } from '@/agent/sessionFactory';
 
 export async function startRunner(): Promise<void> {
   // We don't have cleanup function at the time of server construction
@@ -173,7 +173,9 @@ export async function startRunner(): Promise<void> {
       }
     };
 
-    // Spawn a new session (sessionId reserved for future --resume functionality)
+    let api: ApiClient | null = null;
+
+    // Spawn a new session
     const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
       logger.debugLargeJson('[RUNNER RUN] Spawning session', options);
 
@@ -311,6 +313,13 @@ export async function startRunner(): Promise<void> {
           }
         }
 
+        if (sessionId) {
+          extraEnv = {
+            ...extraEnv,
+            HAPI_SESSION_ID: sessionId
+          };
+        }
+
         if (worktreeInfo) {
           extraEnv = {
             ...extraEnv,
@@ -337,8 +346,28 @@ export async function startRunner(): Promise<void> {
           args.push('--yolo');
         }
 
-        // TODO: In future, sessionId could be used with --resume to continue existing sessions
-        // For now, we ignore it - each spawn creates a new session
+        if (sessionId && agentCommand === 'claude') {
+          try {
+            const apiClient = api ?? (api = await ApiClient.create());
+            const sessionInfo = await apiClient.getSession(sessionId);
+            const claudeSessionId = sessionInfo.metadata?.claudeSessionId;
+            if (!claudeSessionId) {
+              logger.debug(`[RUNNER RUN] Missing claudeSessionId in metadata for resume sessionId: ${sessionId}`);
+              return {
+                type: 'error',
+                errorMessage: `Unable to resume session ${sessionId} - missing claudeSessionId in session metadata`
+              };
+            }
+            args.push('--resume', claudeSessionId);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            logger.debug(`[RUNNER RUN] Failed to fetch session metadata for resume sessionId: ${sessionId}`, error);
+            return {
+              type: 'error',
+              errorMessage: `Unable to resume session ${sessionId} - failed to load session metadata: ${errorMessage}`
+            };
+          }
+        }
         const MAX_TAIL_CHARS = 4000;
         let stderrTail = '';
         const appendTail = (current: string, chunk: Buffer | string): string => {
@@ -522,11 +551,11 @@ export async function startRunner(): Promise<void> {
     };
 
     // Create API client
-    const api = await ApiClient.create();
+    const apiClient = api ?? (api = await ApiClient.create());
 
     // Get or create machine (with retry for transient connection errors)
     const machine = await withRetry(
-      () => api.getOrCreateMachine({
+      () => apiClient.getOrCreateMachine({
         machineId,
         metadata: buildMachineMetadata(),
         runnerState: initialRunnerState
@@ -544,8 +573,15 @@ export async function startRunner(): Promise<void> {
     );
     logger.debug(`[RUNNER RUN] Machine registered: ${machine.id}`);
 
+    // Scan local Claude session files and register historical sessions with server
+    try {
+      await loadHistoricalSessions({ api: apiClient, machineId });
+    } catch (error) {
+      logger.debug('[RUNNER RUN] Failed to load historical sessions', error);
+    }
+
     // Create realtime machine session
-    const apiMachine = api.machineSyncClient(machine);
+    const apiMachine = apiClient.machineSyncClient(machine);
 
     // Set RPC handlers
     apiMachine.setRPCHandlers({

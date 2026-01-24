@@ -60,9 +60,15 @@ export default {
 
   // Session actions
   'session.action.rename': 'Rename',
+  'session.action.suspend': 'Suspend',
+  'session.action.resume': 'Resume',
   'session.action.archive': 'Archive',
   'session.action.delete': 'Delete',
   'session.action.copy': 'Copy',
+
+  // Session banners
+  'session.banner.inactive': 'Session is inactive. Controls are disabled.',
+  'session.banner.suspended': 'Session is suspended.',
 
   // Dialogs
   'dialog.rename.title': 'Rename Session',
@@ -105,6 +111,11 @@ export default {
   'newSession.yolo.desc': 'Uses dangerous agent flags when spawning.',
   'newSession.create': 'Create',
   'newSession.creating': 'Creating…',
+  'newSession.select': 'Select',
+  'newSession.browse.filter': 'Filter...',
+  'newSession.browse.loading': 'Loading...',
+  'newSession.browse.empty': 'Empty directory',
+  'newSession.browse.noMatch': 'No matches',
 
   // Spawn session (old component)
   'spawn.title': 'Create Session',

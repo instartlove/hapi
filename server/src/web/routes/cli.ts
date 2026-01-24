@@ -24,6 +24,15 @@ const getMessagesQuerySchema = z.object({
     limit: z.coerce.number().int().min(1).max(200).optional()
 })
 
+const syncMessagesSchema = z.object({
+    messages: z.array(z.object({
+        uuid: z.string(),
+        type: z.string(),
+        content: z.unknown(),
+        timestamp: z.union([z.string(), z.number()]).optional()
+    }))
+})
+
 type CliEnv = {
     Variables: {
         namespace: string
@@ -134,6 +143,35 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         const limit = parsed.data.limit ?? 200
         const messages = engine.getMessagesAfter(sessionId, { afterSeq: parsed.data.afterSeq, limit })
         return c.json({ messages })
+    })
+
+    // Sync historical messages from CLI to server
+    app.post('/sessions/:id/sync-messages', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+        const sessionId = c.req.param('id')
+        const namespace = c.get('namespace')
+        const resolved = resolveSessionForNamespace(engine, sessionId, namespace)
+        if (!resolved.ok) {
+            return c.json({ error: resolved.error }, resolved.status)
+        }
+
+        const json = await c.req.json().catch(() => null)
+        const parsed = syncMessagesSchema.safeParse(json)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        let synced = 0
+        for (const msg of parsed.data.messages) {
+            // Use uuid as localId to prevent duplicates
+            engine.addMessage(sessionId, msg.content, msg.uuid)
+            synced++
+        }
+
+        return c.json({ ok: true, synced })
     })
 
     app.post('/machines', async (c) => {

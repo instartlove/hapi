@@ -9,6 +9,7 @@ import type { AgentBackend, PromptContent } from '@/agent/types';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
+import { registerSuspendSessionHandler } from '@/claude/registerSuspendSessionHandler';
 import { bootstrapSession } from '@/agent/sessionFactory';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 
@@ -73,6 +74,9 @@ export async function runAgentSession(opts: {
 
     let thinking = false;
     let shouldExit = false;
+    let lifecycleState: 'archived' | 'suspended' = 'archived';
+    let lifecycleBy = 'cli';
+    let lifecycleReason = 'User terminated';
     let waitAbortController: AbortController | null = null;
 
     session.keepAlive(thinking, 'remote');
@@ -102,6 +106,9 @@ export async function runAgentSession(opts: {
 
     const handleKillSession = async () => {
         if (shouldExit) return;
+        lifecycleState = 'archived';
+        lifecycleBy = 'webapp';
+        lifecycleReason = 'Session killed';
         shouldExit = true;
         await permissionAdapter.cancelAll('Session killed');
         if (waitAbortController) {
@@ -110,6 +117,17 @@ export async function runAgentSession(opts: {
     };
 
     registerKillSessionHandler(session.rpcHandlerManager, handleKillSession);
+    registerSuspendSessionHandler(session.rpcHandlerManager, async (payload) => {
+        if (shouldExit) return;
+        lifecycleState = 'suspended';
+        lifecycleBy = payload.by ?? 'webapp';
+        lifecycleReason = payload.reason ?? 'Session suspended';
+        shouldExit = true;
+        await permissionAdapter.cancelAll('Session suspended');
+        if (waitAbortController) {
+            waitAbortController.abort();
+        }
+    });
 
     try {
         while (!shouldExit) {
@@ -159,6 +177,13 @@ export async function runAgentSession(opts: {
     } finally {
         clearInterval(keepAliveInterval);
         await permissionAdapter.cancelAll('Session ended');
+        session.updateMetadata((currentMetadata) => ({
+            ...currentMetadata,
+            lifecycleState,
+            lifecycleStateSince: Date.now(),
+            archivedBy: lifecycleBy,
+            archiveReason: lifecycleReason
+        }));
         session.sendSessionDeath();
         await session.flush();
         session.close();

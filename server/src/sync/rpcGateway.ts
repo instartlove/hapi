@@ -31,11 +31,31 @@ export type RpcPathExistsResponse = {
     exists: Record<string, boolean>
 }
 
+export type RpcListDirectoryResponse = {
+    path: string
+    entries: Array<{
+        name: string
+        path: string
+        isDirectory: boolean
+    }>
+    error?: string
+}
+
 export class RpcGateway {
     constructor(
         private readonly io: Server,
         private readonly rpcRegistry: RpcRegistry
     ) {
+    }
+
+    async suspendSession(
+        sessionId: string,
+        options?: {
+            by?: string
+            reason?: string
+        }
+    ): Promise<void> {
+        await this.sessionRpc(sessionId, 'suspendSession', options ?? {})
     }
 
     async approvePermission(
@@ -96,13 +116,14 @@ export class RpcGateway {
         agent: 'claude' | 'codex' | 'gemini' = 'claude',
         yolo?: boolean,
         sessionType?: 'simple' | 'worktree',
-        worktreeName?: string
+        worktreeName?: string,
+        sessionId?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
                 machineId,
                 'spawn-happy-session',
-                { type: 'spawn-in-directory', directory, agent, yolo, sessionType, worktreeName }
+                { directory, agent, yolo, sessionType, worktreeName, sessionId }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
@@ -135,6 +156,14 @@ export class RpcGateway {
             exists[key] = value === true
         }
         return exists
+    }
+
+    async listDirectory(machineId: string, path: string, showHidden?: boolean): Promise<RpcListDirectoryResponse> {
+        const result = await this.machineRpc(machineId, 'list-directory', { path, showHidden }) as RpcListDirectoryResponse | unknown
+        if (!result || typeof result !== 'object') {
+            return { path, entries: [], error: 'Unexpected list-directory result' }
+        }
+        return result as RpcListDirectoryResponse
     }
 
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {

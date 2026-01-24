@@ -8,14 +8,14 @@ const base = process.env.VITE_BASE_URL || '/'
 export default defineConfig({
     server: {
         host: true,
-        allowedHosts: ['hapidev.weishu.me'],
+        allowedHosts: ['hapidev.weishu.me', 'dev.2sl.us'],
         proxy: {
             '/api': {
-                target: 'http://127.0.0.1:3006',
+                target: 'http://127.0.0.1:50001',
                 changeOrigin: true
             },
             '/socket.io': {
-                target: 'http://127.0.0.1:3006',
+                target: 'http://127.0.0.1:50001',
                 ws: true
             }
         }

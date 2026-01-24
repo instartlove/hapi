@@ -28,6 +28,10 @@ const uploadDeleteSchema = z.object({
     path: z.string().min(1)
 })
 
+const suspendSessionSchema = z.object({
+    reason: z.string().min(1).max(500).optional()
+})
+
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 function estimateBase64Bytes(base64: string): number {
@@ -177,6 +181,46 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         await engine.archiveSession(sessionResult.sessionId)
         return c.json({ ok: true })
+    })
+
+    app.post('/sessions/:id/suspend', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = suspendSessionSchema.safeParse(body ?? {})
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        await engine.suspendSession(sessionResult.sessionId, { by: 'webapp', reason: parsed.data.reason })
+        return c.json({ ok: true })
+    })
+
+    app.post('/sessions/:id/resume', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        if (sessionResult.session.active) {
+            return c.json({ type: 'error', message: 'Session is already active' })
+        }
+
+        const result = await engine.resumeSession(sessionResult.sessionId)
+        return c.json(result)
     })
 
     app.post('/sessions/:id/switch', async (c) => {

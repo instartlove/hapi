@@ -73,6 +73,18 @@ export type MessagesResponse = {
 export type MachinesResponse = { machines: Machine[] }
 export type MachinePathsExistsResponse = { exists: Record<string, boolean> }
 
+export type DirectoryEntry = {
+    name: string
+    path: string
+    isDirectory: boolean
+}
+
+export type BrowseDirectoryResponse = {
+    path: string
+    entries: DirectoryEntry[]
+    error?: string
+}
+
 export type SpawnResponse =
     | { type: 'success'; sessionId: string }
     | { type: 'error'; message: string }

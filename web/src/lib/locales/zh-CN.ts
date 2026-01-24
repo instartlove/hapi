@@ -60,9 +60,15 @@ export default {
 
   // Session actions
   'session.action.rename': '重命名',
+  'session.action.suspend': '挂起',
+  'session.action.resume': '恢复',
   'session.action.archive': '归档',
   'session.action.delete': '删除',
   'session.action.copy': '复制',
+
+  // Session banners
+  'session.banner.inactive': '会话已停止，控制已禁用。',
+  'session.banner.suspended': '会话已挂起。',
 
   // Dialogs
   'dialog.rename.title': '重命名会话',
@@ -107,6 +113,11 @@ export default {
   'newSession.yolo.desc': '启动时使用危险的代理标志。',
   'newSession.create': '创建',
   'newSession.creating': '创建中…',
+  'newSession.select': '选择',
+  'newSession.browse.filter': '筛选...',
+  'newSession.browse.loading': '加载中...',
+  'newSession.browse.empty': '空目录',
+  'newSession.browse.noMatch': '无匹配项',
 
   // Spawn session (old component)
   'spawn.title': '创建会话',

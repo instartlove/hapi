@@ -1,6 +1,7 @@
 import type {
     AttachmentMetadata,
     AuthResponse,
+    BrowseDirectoryResponse,
     DeleteUploadResponse,
     FileReadResponse,
     FileSearchResponse,
@@ -277,6 +278,20 @@ export class ApiClient {
         })
     }
 
+    async suspendSession(sessionId: string, options?: { reason?: string }): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/suspend`, {
+            method: 'POST',
+            body: JSON.stringify(options ?? {})
+        })
+    }
+
+    async resumeSession(sessionId: string): Promise<SpawnResponse> {
+        return await this.request<SpawnResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/resume`, {
+            method: 'POST',
+            body: JSON.stringify({})
+        })
+    }
+
     async switchSession(sessionId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/switch`, {
             method: 'POST',
@@ -343,6 +358,20 @@ export class ApiClient {
             {
                 method: 'POST',
                 body: JSON.stringify({ paths })
+            }
+        )
+    }
+
+    async browseDirectory(
+        machineId: string,
+        path: string,
+        showHidden?: boolean
+    ): Promise<BrowseDirectoryResponse> {
+        return await this.request<BrowseDirectoryResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/browse`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ path, showHidden })
             }
         )
     }

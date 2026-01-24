@@ -3,6 +3,7 @@ import { loop, type EnhancedMode, type PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
+import { registerSuspendSessionHandler } from '@/claude/registerSuspendSessionHandler';
 import type { AgentState } from '@/api/types';
 import type { CodexSession } from './session';
 import { parseCodexCliOverrides } from './utils/codexCliOverrides';
@@ -28,7 +29,7 @@ export async function runCodex(opts: {
     let state: AgentState = {
         controlledByUser: false
     };
-    const { api, session } = await bootstrapSession({
+    const { api, session, sessionInfo } = await bootstrapSession({
         flavor: 'codex',
         startedBy,
         workingDirectory,
@@ -57,6 +58,12 @@ export async function runCodex(opts: {
 
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
+    registerSuspendSessionHandler(session.rpcHandlerManager, async (payload) => {
+        lifecycle.setLifecycleState('suspended');
+        lifecycle.setLifecycleBy(payload.by ?? 'webapp');
+        lifecycle.setArchiveReason(payload.reason ?? 'Session suspended');
+        await lifecycle.cleanupAndExit();
+    });
 
     const syncSessionMode = () => {
         const sessionInstance = sessionWrapperRef.current;
@@ -119,7 +126,7 @@ export async function runCodex(opts: {
             codexCliOverrides,
             startedBy,
             permissionMode: currentPermissionMode,
-            resumeSessionId: opts.resumeSessionId,
+            resumeSessionId: opts.resumeSessionId ?? (sessionInfo.metadata?.codexSessionId ?? undefined),
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;

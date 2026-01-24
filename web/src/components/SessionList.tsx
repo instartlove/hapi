@@ -176,11 +176,38 @@ function SessionItem(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(
+    const { archiveSession, suspendSession, resumeSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
     )
+
+    const canResume = Boolean(s.metadata?.machineId && s.metadata?.path)
+
+    const handleSuspend = async () => {
+        try {
+            await suspendSession()
+            haptic.notification('success')
+        } catch (error) {
+            console.error('Failed to suspend session', error)
+            haptic.notification('error')
+        }
+    }
+
+    const handleResume = async () => {
+        if (!canResume) {
+            haptic.notification('error')
+            return
+        }
+        try {
+            await resumeSession()
+            haptic.notification('success')
+            onSelect(s.id)
+        } catch (error) {
+            console.error('Failed to resume session', error)
+            haptic.notification('error')
+        }
+    }
 
     const longPressHandlers = useLongPress({
         onLongPress: (point) => {
@@ -268,7 +295,10 @@ function SessionItem(props: {
                 isOpen={menuOpen}
                 onClose={() => setMenuOpen(false)}
                 sessionActive={s.active}
+                lifecycleState={s.metadata?.lifecycleState ?? null}
                 onRename={() => setRenameOpen(true)}
+                onSuspend={s.active ? handleSuspend : undefined}
+                onResume={!s.active && canResume ? handleResume : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}

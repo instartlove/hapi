@@ -226,6 +226,8 @@ export function NewSession(props: {
                 onChange={handleMachineChange}
             />
             <DirectorySection
+                api={props.api}
+                machineId={machineId}
                 directory={directory}
                 suggestions={suggestions}
                 selectedIndex={selectedIndex}

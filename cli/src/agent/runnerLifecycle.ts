@@ -13,6 +13,8 @@ type RunnerLifecycleOptions = {
 export type RunnerLifecycle = {
     setExitCode: (code: number) => void
     setArchiveReason: (reason: string) => void
+    setLifecycleState: (state: 'archived' | 'suspended') => void
+    setLifecycleBy: (by: string) => void
     markCrash: (error: unknown) => void
     cleanup: () => Promise<void>
     cleanupAndExit: (codeOverride?: number) => Promise<void>
@@ -21,7 +23,9 @@ export type RunnerLifecycle = {
 
 export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLifecycle {
     let exitCode = 0
-    let archiveReason = 'User terminated'
+    let lifecycleState: 'archived' | 'suspended' = 'archived'
+    let lifecycleBy = 'cli'
+    let lifecycleReason = 'User terminated'
     let cleanupStarted = false
     let cleanupPromise: Promise<void> | null = null
 
@@ -30,10 +34,10 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
     const archiveAndClose = async () => {
         options.session.updateMetadata((currentMetadata) => ({
             ...currentMetadata,
-            lifecycleState: 'archived',
+            lifecycleState,
             lifecycleStateSince: Date.now(),
-            archivedBy: 'cli',
-            archiveReason
+            archivedBy: lifecycleBy,
+            archiveReason: lifecycleReason
         }))
 
         options.session.sendSessionDeath()
@@ -87,13 +91,23 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
     }
 
     const setArchiveReason = (reason: string) => {
-        archiveReason = reason
+        lifecycleReason = reason
+    }
+
+    const setLifecycleState = (state: 'archived' | 'suspended') => {
+        lifecycleState = state
+    }
+
+    const setLifecycleBy = (by: string) => {
+        lifecycleBy = by
     }
 
     const markCrash = (error: unknown) => {
         logger.debug(`${logPrefix} Unhandled error:`, error)
         exitCode = 1
-        archiveReason = 'Session crashed'
+        lifecycleState = 'archived'
+        lifecycleBy = 'cli'
+        lifecycleReason = 'Session crashed'
     }
 
     const registerProcessHandlers = () => {
@@ -119,6 +133,8 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
     return {
         setExitCode,
         setArchiveReason,
+        setLifecycleState,
+        setLifecycleBy,
         markCrash,
         cleanup,
         cleanupAndExit,

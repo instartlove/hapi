@@ -3,7 +3,8 @@
  */
 
 import { io, type Socket } from 'socket.io-client'
-import { stat } from 'node:fs/promises'
+import { stat, readdir } from 'node:fs/promises'
+import { join } from 'node:path'
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { RunnerState, Machine, MachineMetadata, Update, UpdateMachineBody } from './types'
@@ -62,6 +63,23 @@ interface PathExistsResponse {
     exists: Record<string, boolean>
 }
 
+interface ListDirectoryRequest {
+    path: string
+    showHidden?: boolean
+}
+
+interface DirectoryEntry {
+    name: string
+    path: string
+    isDirectory: boolean
+}
+
+interface ListDirectoryResponse {
+    path: string
+    entries: DirectoryEntry[]
+    error?: string
+}
+
 export class ApiMachineClient {
     private socket!: Socket<ServerToRunnerEvents, RunnerToServerEvents>
     private keepAliveInterval: NodeJS.Timeout | null = null
@@ -95,6 +113,48 @@ export class ApiMachineClient {
             }))
 
             return { exists }
+        })
+
+        this.rpcHandlerManager.registerHandler<ListDirectoryRequest, ListDirectoryResponse>('list-directory', async (params) => {
+            const dirPath = params?.path
+            const showHidden = params?.showHidden ?? false
+
+            if (!dirPath || typeof dirPath !== 'string') {
+                return { path: '', entries: [], error: 'Path is required' }
+            }
+
+            try {
+                const entries = await readdir(dirPath)
+                const items = await Promise.all(
+                    entries
+                        .filter(name => showHidden || !name.startsWith('.'))
+                        .slice(0, 100)
+                        .map(async (name): Promise<DirectoryEntry | null> => {
+                            const fullPath = join(dirPath, name)
+                            try {
+                                const stats = await stat(fullPath)
+                                return {
+                                    name,
+                                    path: fullPath,
+                                    isDirectory: stats.isDirectory()
+                                }
+                            } catch {
+                                return null
+                            }
+                        })
+                )
+
+                return {
+                    path: dirPath,
+                    entries: items.filter((item): item is DirectoryEntry => item !== null)
+                }
+            } catch (error) {
+                return {
+                    path: dirPath,
+                    entries: [],
+                    error: error instanceof Error ? error.message : 'Failed to list directory'
+                }
+            }
         })
     }
 

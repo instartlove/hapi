@@ -12,6 +12,8 @@ export function useSessionActions(
 ): {
     abortSession: () => Promise<void>
     archiveSession: () => Promise<void>
+    suspendSession: (options?: { reason?: string }) => Promise<void>
+    resumeSession: () => Promise<void>
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setModelMode: (mode: ModelMode) => Promise<void>
@@ -43,6 +45,29 @@ export function useSessionActions(
                 throw new Error('Session unavailable')
             }
             await api.archiveSession(sessionId)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
+    const suspendMutation = useMutation({
+        mutationFn: async (options?: { reason?: string }) => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            await api.suspendSession(sessionId, options)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
+    const resumeMutation = useMutation({
+        mutationFn: async () => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            const result = await api.resumeSession(sessionId)
+            if (result.type === 'error') {
+                throw new Error(result.message)
+            }
         },
         onSuccess: () => void invalidateSession(),
     })
@@ -109,6 +134,8 @@ export function useSessionActions(
     return {
         abortSession: abortMutation.mutateAsync,
         archiveSession: archiveMutation.mutateAsync,
+        suspendSession: suspendMutation.mutateAsync,
+        resumeSession: resumeMutation.mutateAsync,
         switchSession: switchMutation.mutateAsync,
         setPermissionMode: permissionMutation.mutateAsync,
         setModelMode: modelMutation.mutateAsync,
@@ -116,6 +143,8 @@ export function useSessionActions(
         deleteSession: deleteMutation.mutateAsync,
         isPending: abortMutation.isPending
             || archiveMutation.isPending
+            || suspendMutation.isPending
+            || resumeMutation.isPending
             || switchMutation.isPending
             || permissionMutation.isPending
             || modelMutation.isPending

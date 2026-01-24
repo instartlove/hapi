@@ -64,9 +64,11 @@ export function getHappyCliCommand(args: string[]): HappyCliCommand {
 
   if (isBunRuntime) {
     // Bun can run TypeScript directly
+    // Use --cwd to ensure path aliases are resolved from CLI project root
+    // The actual working directory is passed via HAPI_WORKING_DIR env var
     return {
       command: process.execPath,
-      args: [entrypoint, ...args]
+      args: ['--cwd', projectRoot, entrypoint, ...args]
     };
   }
 
@@ -92,7 +94,7 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   // details and flags we use to achieve the same result.
   const fullCommand = `hapi ${args.join(' ')}`;
   logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}`);
-  
+
   const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args);
 
   // Sanity check that the entrypoint path exists
@@ -104,6 +106,16 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
       throw new Error(errorMessage);
     }
   }
-  
-  return spawn(spawnCommand, spawnArgs, options);
+
+  // In dev mode with --cwd, pass actual working directory via env var
+  const spawnOptions = { ...options };
+  if (!isBunCompiled() && directory) {
+    spawnOptions.env = {
+      ...process.env,
+      ...options.env,
+      HAPI_WORKING_DIR: String(directory)
+    };
+  }
+
+  return spawn(spawnCommand, spawnArgs, spawnOptions);
 }

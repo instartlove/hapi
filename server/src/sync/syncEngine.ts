@@ -15,7 +15,7 @@ import type { SSEManager } from '../sse/sseManager'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService } from './messageService'
-import { RpcGateway, type RpcCommandResponse, type RpcPathExistsResponse, type RpcReadFileResponse, type RpcUploadFileResponse, type RpcDeleteUploadResponse } from './rpcGateway'
+import { RpcGateway, type RpcCommandResponse, type RpcPathExistsResponse, type RpcReadFileResponse, type RpcUploadFileResponse, type RpcDeleteUploadResponse, type RpcListDirectoryResponse } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 
 export type { Session, SyncEvent } from '@hapi/protocol/types'
@@ -24,12 +24,18 @@ export type { SyncEventListener } from './eventPublisher'
 export type { RpcCommandResponse, RpcPathExistsResponse, RpcReadFileResponse, RpcUploadFileResponse, RpcDeleteUploadResponse } from './rpcGateway'
 
 export class SyncEngine {
+    private readonly store: Store
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
     private readonly messageService: MessageService
     private readonly rpcGateway: RpcGateway
     private inactivityTimer: NodeJS.Timeout | null = null
+    private readonly autoSuspendAfterMs: number
+    private autoSuspendRunning = false
+    private autoSuspendLastCheckedAt = 0
+    private readonly autoSuspendInFlight: Set<string> = new Set()
+    private readonly lastActivityAtBySessionId: Map<string, number> = new Map()
 
     constructor(
         store: Store,
@@ -37,13 +43,24 @@ export class SyncEngine {
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager
     ) {
+        this.store = store
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher)
         this.messageService = new MessageService(store, io, this.eventPublisher)
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
+        this.autoSuspendAfterMs = (() => {
+            const raw = process.env.HAPI_SESSION_AUTO_SUSPEND_MS
+            if (!raw) return 0
+            const parsed = Number.parseInt(raw, 10)
+            if (!Number.isFinite(parsed) || parsed <= 0) return 0
+            return parsed
+        })()
         this.reloadAll()
-        this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
+        this.inactivityTimer = setInterval(() => {
+            this.expireInactive()
+            void this.autoSuspendIdleSessions()
+        }, 5_000)
     }
 
     stop(): void {
@@ -130,6 +147,10 @@ export class SyncEngine {
         return this.messageService.getMessagesAfter(sessionId, options)
     }
 
+    addMessage(sessionId: string, content: unknown, localId?: string): void {
+        this.store.messages.addMessage(sessionId, content, localId)
+    }
+
     handleRealtimeEvent(event: SyncEvent): void {
         if (event.type === 'session-updated' && event.sessionId) {
             this.sessionCache.refreshSession(event.sessionId)
@@ -142,6 +163,9 @@ export class SyncEngine {
         }
 
         if (event.type === 'message-received' && event.sessionId) {
+            if (event.message && typeof event.message.createdAt === 'number') {
+                this.recordSessionActivity(event.sessionId, event.message.createdAt)
+            }
             if (!this.sessionCache.getSession(event.sessionId)) {
                 this.sessionCache.refreshSession(event.sessionId)
             }
@@ -204,6 +228,7 @@ export class SyncEngine {
         }
     ): Promise<void> {
         await this.messageService.sendMessage(sessionId, payload)
+        this.recordSessionActivity(sessionId, Date.now())
     }
 
     async approvePermission(
@@ -229,9 +254,113 @@ export class SyncEngine {
         await this.rpcGateway.abortSession(sessionId)
     }
 
+    async suspendSession(
+        sessionId: string,
+        options?: {
+            by?: string
+            reason?: string
+        }
+    ): Promise<void> {
+        const session = this.sessionCache.getSession(sessionId) ?? this.sessionCache.refreshSession(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        if (!session.active) {
+            const now = Date.now()
+            const currentMetadata = session.metadata ?? { path: '', host: '' }
+            const nextMetadata = {
+                ...currentMetadata,
+                lifecycleState: 'suspended',
+                lifecycleStateSince: now,
+                archivedBy: options?.by ?? 'webapp',
+                archiveReason: options?.reason ?? 'Session suspended'
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                nextMetadata,
+                session.metadataVersion,
+                session.namespace
+            )
+
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+
+            if (result.result === 'version-mismatch') {
+                const refreshed = this.sessionCache.refreshSession(sessionId)
+                if (!refreshed) {
+                    throw new Error('Session not found')
+                }
+
+                const latestMetadata = refreshed.metadata ?? { path: '', host: '' }
+                const retryMetadata = {
+                    ...latestMetadata,
+                    lifecycleState: 'suspended',
+                    lifecycleStateSince: now,
+                    archivedBy: options?.by ?? 'webapp',
+                    archiveReason: options?.reason ?? 'Session suspended'
+                }
+
+                const retry = this.store.sessions.updateSessionMetadata(
+                    sessionId,
+                    retryMetadata,
+                    refreshed.metadataVersion,
+                    refreshed.namespace
+                )
+
+                if (retry.result === 'success') {
+                    this.sessionCache.refreshSession(sessionId)
+                    return
+                }
+            }
+
+            throw new Error('Failed to suspend inactive session')
+        }
+
+        await this.rpcGateway.suspendSession(sessionId, options)
+    }
+
     async archiveSession(sessionId: string): Promise<void> {
         await this.rpcGateway.killSession(sessionId)
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
+    }
+
+    async resumeSession(sessionId: string): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
+        const session = this.sessionCache.getSession(sessionId) ?? this.sessionCache.refreshSession(sessionId)
+        if (!session) {
+            return { type: 'error', message: 'Session not found' }
+        }
+
+        const metadata = session.metadata
+        if (!metadata) {
+            return { type: 'error', message: 'Missing session metadata' }
+        }
+
+        const machineId = metadata.machineId
+        if (!machineId) {
+            return { type: 'error', message: 'Missing machineId for session' }
+        }
+
+        const directory = metadata.worktree?.worktreePath ?? metadata.path
+        if (!directory) {
+            return { type: 'error', message: 'Missing session directory' }
+        }
+
+        const flavor = metadata.flavor ?? 'claude'
+        const agent = flavor === 'claude' || flavor === 'codex' || flavor === 'gemini' ? flavor : 'claude'
+
+        return await this.rpcGateway.spawnSession(
+            machineId,
+            directory,
+            agent,
+            undefined,
+            'simple',
+            undefined,
+            sessionId
+        )
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
@@ -281,6 +410,10 @@ export class SyncEngine {
         return await this.rpcGateway.checkPathsExist(machineId, paths)
     }
 
+    async listDirectory(machineId: string, path: string, showHidden?: boolean): Promise<RpcListDirectoryResponse> {
+        return await this.rpcGateway.listDirectory(machineId, path, showHidden)
+    }
+
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {
         return await this.rpcGateway.getGitStatus(sessionId, cwd)
     }
@@ -315,5 +448,91 @@ export class SyncEngine {
         error?: string
     }> {
         return await this.rpcGateway.listSlashCommands(sessionId, agent)
+    }
+
+    private recordSessionActivity(sessionId: string, createdAt: number): void {
+        if (!Number.isFinite(createdAt)) {
+            return
+        }
+        const next = createdAt < 1_000_000_000_000 ? createdAt * 1000 : createdAt
+        if (!Number.isFinite(next)) {
+            return
+        }
+        const prev = this.lastActivityAtBySessionId.get(sessionId) ?? 0
+        if (next > prev) {
+            this.lastActivityAtBySessionId.set(sessionId, next)
+        }
+    }
+
+    private getLastActivityAt(sessionId: string): number {
+        const cached = this.lastActivityAtBySessionId.get(sessionId)
+        if (cached) {
+            return cached
+        }
+
+        const latest = this.store.messages.getMessages(sessionId, 1)
+        const lastFromStore = latest[0]?.createdAt
+        if (typeof lastFromStore === 'number') {
+            this.recordSessionActivity(sessionId, lastFromStore)
+            return this.lastActivityAtBySessionId.get(sessionId) ?? lastFromStore
+        }
+
+        const session = this.sessionCache.getSession(sessionId)
+        const fallback = session ? session.createdAt : Date.now()
+        this.lastActivityAtBySessionId.set(sessionId, fallback)
+        return fallback
+    }
+
+    private async autoSuspendIdleSessions(): Promise<void> {
+        if (this.autoSuspendAfterMs <= 0) {
+            return
+        }
+
+        const now = Date.now()
+        const minCheckIntervalMs = 10_000
+        if (now - this.autoSuspendLastCheckedAt < minCheckIntervalMs) {
+            return
+        }
+        if (this.autoSuspendRunning) {
+            return
+        }
+
+        this.autoSuspendRunning = true
+        this.autoSuspendLastCheckedAt = now
+
+        try {
+            for (const session of this.sessionCache.getSessions()) {
+                if (!session.active) continue
+                if (session.thinking) continue
+
+                const pendingRequests = session.agentState?.requests ? Object.keys(session.agentState.requests).length : 0
+                if (pendingRequests > 0) continue
+
+                if (session.agentState?.controlledByUser === true) continue
+
+                const lifecycleState = session.metadata?.lifecycleState
+                if (typeof lifecycleState === 'string' && lifecycleState !== 'running') {
+                    continue
+                }
+
+                if (this.autoSuspendInFlight.has(session.id)) {
+                    continue
+                }
+
+                const lastActivityAt = this.getLastActivityAt(session.id)
+                if (now - lastActivityAt < this.autoSuspendAfterMs) {
+                    continue
+                }
+
+                this.autoSuspendInFlight.add(session.id)
+                void this.suspendSession(session.id, { by: 'auto', reason: 'Inactive' })
+                    .catch(() => { })
+                    .finally(() => {
+                        this.autoSuspendInFlight.delete(session.id)
+                    })
+            }
+        } finally {
+            this.autoSuspendRunning = false
+        }
     }
 }

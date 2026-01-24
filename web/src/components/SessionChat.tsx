@@ -17,6 +17,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
+import { useTranslation } from '@/lib/use-translation'
 
 export function SessionChat(props: {
     api: ApiClient
@@ -39,17 +40,20 @@ export function SessionChat(props: {
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
 }) {
     const { haptic } = usePlatform()
+    const { t } = useTranslation()
     const navigate = useNavigate()
     const controlsDisabled = !props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const agentFlavor = props.session.metadata?.flavor ?? null
-    const { abortSession, switchSession, setPermissionMode, setModelMode } = useSessionActions(
+    const { abortSession, resumeSession, switchSession, setPermissionMode, setModelMode } = useSessionActions(
         props.api,
         props.session.id,
         agentFlavor
     )
+    const canResume = Boolean(props.session.metadata?.machineId && props.session.metadata?.path)
+    const lifecycleState = props.session.metadata?.lifecycleState ?? null
 
     // Voice assistant integration
     const voice = useVoiceOptional()
@@ -218,6 +222,21 @@ export function SessionChat(props: {
         props.onRefresh()
     }, [switchSession, props.onRefresh])
 
+    const handleResume = useCallback(async () => {
+        if (!canResume) {
+            haptic.notification('error')
+            return
+        }
+        try {
+            await resumeSession()
+            haptic.notification('success')
+            props.onRefresh()
+        } catch (e) {
+            haptic.notification('error')
+            console.error('Failed to resume session:', e)
+        }
+    }, [canResume, haptic, resumeSession, props.onRefresh])
+
     const handleViewFiles = useCallback(() => {
         navigate({
             to: '/sessions/$sessionId/files',
@@ -266,7 +285,22 @@ export function SessionChat(props: {
             {controlsDisabled ? (
                 <div className="px-3 pt-3">
                     <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
-                        Session is inactive. Controls are disabled.
+                        {lifecycleState === 'suspended' ? (
+                            <div className="flex items-center justify-between gap-3">
+                                <div>{t('session.banner.suspended')}</div>
+                                {canResume ? (
+                                    <button
+                                        type="button"
+                                        onClick={handleResume}
+                                        className="rounded-md bg-[var(--app-link)] px-3 py-1.5 text-xs font-medium text-white"
+                                    >
+                                        {t('session.action.resume')}
+                                    </button>
+                                ) : null}
+                            </div>
+                        ) : (
+                            t('session.banner.inactive')
+                        )}
                     </div>
                 </div>
             ) : null}

@@ -13,6 +13,57 @@ export class ApiClient {
 
     private constructor(private readonly token: string) { }
 
+    async getSession(sessionId: string): Promise<Session> {
+        const response = await axios.get<CreateSessionResponse>(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}`,
+            {
+                headers: {
+                    Authorization: `Bearer ${this.token}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 60_000
+            }
+        )
+
+        const parsed = CreateSessionResponseSchema.safeParse(response.data)
+        if (!parsed.success) {
+            throw new Error('Invalid /cli/sessions/:id response')
+        }
+
+        const raw = parsed.data.session
+
+        const metadata = (() => {
+            if (raw.metadata == null) return null
+            const parsedMetadata = MetadataSchema.safeParse(raw.metadata)
+            return parsedMetadata.success ? parsedMetadata.data : null
+        })()
+
+        const agentState = (() => {
+            if (raw.agentState == null) return null
+            const parsedAgentState = AgentStateSchema.safeParse(raw.agentState)
+            return parsedAgentState.success ? parsedAgentState.data : null
+        })()
+
+        return {
+            id: raw.id,
+            namespace: raw.namespace,
+            seq: raw.seq,
+            createdAt: raw.createdAt,
+            updatedAt: raw.updatedAt,
+            active: raw.active,
+            activeAt: raw.activeAt,
+            metadata,
+            metadataVersion: raw.metadataVersion,
+            agentState,
+            agentStateVersion: raw.agentStateVersion,
+            thinking: raw.thinking,
+            thinkingAt: raw.thinkingAt,
+            todos: raw.todos,
+            permissionMode: raw.permissionMode,
+            modelMode: raw.modelMode
+        }
+    }
+
     async getOrCreateSession(opts: {
         tag: string
         metadata: Metadata
@@ -71,6 +122,26 @@ export class ApiClient {
             permissionMode: raw.permissionMode,
             modelMode: raw.modelMode
         }
+    }
+
+    async syncMessages(sessionId: string, messages: Array<{
+        uuid: string
+        type: string
+        content: unknown
+        timestamp?: string | number
+    }>): Promise<{ ok: boolean; synced: number }> {
+        const response = await axios.post<{ ok: boolean; synced: number }>(
+            `${configuration.apiUrl}/cli/sessions/${sessionId}/sync-messages`,
+            { messages },
+            {
+                headers: {
+                    Authorization: `Bearer ${this.token}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 120_000
+            }
+        )
+        return response.data
     }
 
     async getOrCreateMachine(opts: {

@@ -2,6 +2,7 @@ import { useId, useMemo, useRef, useState } from 'react'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
+import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
@@ -67,6 +68,7 @@ export function SessionHeader(props: {
     onSessionDeleted?: () => void
 }) {
     const { t } = useTranslation()
+    const { haptic } = usePlatform()
     const { session, api, onSessionDeleted } = props
     const title = useMemo(() => getSessionTitle(session), [session])
     const worktreeBranch = session.metadata?.worktree?.branch
@@ -79,15 +81,41 @@ export function SessionHeader(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(
+    const { archiveSession, suspendSession, resumeSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
         session.id,
         session.metadata?.flavor ?? null
     )
 
+    const canResume = Boolean(session.metadata?.machineId && session.metadata?.path)
+
     const handleDelete = async () => {
         await deleteSession()
         onSessionDeleted?.()
+    }
+
+    const handleSuspend = async () => {
+        try {
+            await suspendSession()
+            haptic.notification('success')
+        } catch (error) {
+            console.error('Failed to suspend session', error)
+            haptic.notification('error')
+        }
+    }
+
+    const handleResume = async () => {
+        if (!canResume) {
+            haptic.notification('error')
+            return
+        }
+        try {
+            await resumeSession()
+            haptic.notification('success')
+        } catch (error) {
+            console.error('Failed to resume session', error)
+            haptic.notification('error')
+        }
     }
 
     const handleMenuToggle = () => {
@@ -178,7 +206,10 @@ export function SessionHeader(props: {
                 isOpen={menuOpen}
                 onClose={() => setMenuOpen(false)}
                 sessionActive={session.active}
+                lifecycleState={session.metadata?.lifecycleState ?? null}
                 onRename={() => setRenameOpen(true)}
+                onSuspend={session.active ? handleSuspend : undefined}
+                onResume={!session.active && canResume ? handleResume : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
